@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@layer base {
+  /* Prevent default document selection in secure viewer mode */
+  .secure-no-select {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+  }
+}
+
+/* Print blocker - renders blank or violation warning */
+@media print {
+  html, body {
+    background: #000000 !important;
+    color: #ffffff !important;
+    height: 100% !important;
+    overflow: hidden !important;
+  }
+
+  body * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  body::after {
+    content: "DOCUMENT RESTRICTED: Printing is strictly prohibited by the document owner via SecureDoc." !important;
+    display: flex !important;
+    visibility: visible !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 24px !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    padding: 120px 40px !important;
+    color: #ef4444 !important;
+    font-family: system-ui, -apple-system, sans-serif !important;
+  }
+}

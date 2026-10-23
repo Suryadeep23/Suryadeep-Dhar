@@ -1,0 +1,8 @@
+{
+  "name": "SecureDoc - View-Only PDF Sharing",
+  "description": "Upload and share view-only PDF documents via protected links with download blocking, print prevention, dynamic watermarking, and view analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

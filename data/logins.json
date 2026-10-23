@@ -1,0 +1,80 @@
+[
+  {
+    "id": "log_4wrxrfjx",
+    "name": "Member John",
+    "email": "member.john@gmail.com",
+    "identifier": "member.john@gmail.com",
+    "identifierType": "gmail",
+    "role": "coordinator",
+    "timestamp": "2026-10-20T02:52:12.819Z",
+    "ip": "127.0.0.1",
+    "userAgent": "curl/7.88.1"
+  },
+  {
+    "id": "log_32uctdkg",
+    "name": "Suryadeep Dhar",
+    "email": "dharsuryadeep@gmail.com",
+    "identifier": "dharsuryadeep@gmail.com",
+    "identifierType": "gmail",
+    "role": "admin",
+    "timestamp": "2026-10-20T02:52:06.063Z",
+    "ip": "127.0.0.1",
+    "userAgent": "curl/7.88.1"
+  },
+  {
+    "id": "log_79cr058x",
+    "name": "Friend 1 (Alex Rivera)",
+    "email": "alex.friend1@gmail.com",
+    "identifier": "alex.friend1@gmail.com",
+    "identifierType": "gmail",
+    "role": "admin",
+    "timestamp": "2026-10-18T08:02:27.174Z",
+    "ip": "127.0.0.1",
+    "userAgent": "curl/7.88.1"
+  },
+  {
+    "id": "log_i705hkus",
+    "name": "Suryadeep Dhar",
+    "email": "dharsuryadeep@gmail.com",
+    "identifier": "dharsuryadeep@gmail.com",
+    "identifierType": "gmail",
+    "role": "admin",
+    "timestamp": "2026-10-18T07:42:34.054Z",
+    "ip": "116.206.221.179",
+    "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36"
+  },
+  {
+    "id": "login_seed_1",
+    "name": "Suryadeep Dhar",
+    "email": "dharsuryadeep@gmail.com",
+    "identifier": "dharsuryadeep@gmail.com",
+    "identifierType": "gmail",
+    "role": "admin",
+    "timestamp": "2026-10-18T07:20:39.162Z",
+    "ip": "192.168.1.42",
+    "userAgent": "Chrome on macOS"
+  },
+  {
+    "id": "login_seed_2",
+    "name": "Elena Rostova",
+    "email": "elena.rostova@thehelpingsquad.org",
+    "phone": "+1 (555) 789-2341",
+    "identifier": "+1 (555) 789-2341",
+    "identifierType": "phone",
+    "role": "coordinator",
+    "timestamp": "2026-10-18T06:53:39.162Z",
+    "ip": "192.168.1.18",
+    "userAgent": "Safari on iPhone"
+  },
+  {
+    "id": "login_seed_3",
+    "name": "Marcus Vance",
+    "email": "volunteer.marcus@gmail.com",
+    "identifier": "volunteer.marcus@gmail.com",
+    "identifierType": "gmail",
+    "role": "volunteer",
+    "timestamp": "2026-10-18T06:03:39.162Z",
+    "ip": "192.168.1.88",
+    "userAgent": "Firefox on Windows"
+  }
+]
