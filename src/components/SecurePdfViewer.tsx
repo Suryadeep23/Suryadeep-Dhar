@@ -23,11 +23,176 @@ import {
   Upload,
   Trash2,
 } from 'lucide-react';
-import { setupPdfWorker, base64ToUint8Array, pdfjsLib } from '../lib/pdfWorker';
+import { setupPdfWorker, base64ToUint8Array, getPdfDocumentOptions, pdfjsLib } from '../lib/pdfWorker';
 import { documentService } from '../services/documentService';
 import { ViewMetaResponse, PdfDocumentItem } from '../types/document';
 import { TheHelpingSquadLogo } from './TheHelpingSquadLogo';
 import { extractAccuratePageCount } from './UploadModal';
+
+interface PdfPageCanvasProps {
+  pdfDoc: any;
+  pageNum: number;
+  scale: number;
+  rotation: number;
+  eager?: boolean;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}
+
+const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
+  pdfDoc,
+  pageNum,
+  scale,
+  rotation,
+  eager = false,
+  containerRef,
+}) => {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const renderTaskRef = useRef<any>(null);
+  const [isVisible, setIsVisible] = useState<boolean>(eager || pageNum <= 3);
+  const [pageDimensions, setPageDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [windowWidth, setWindowWidth] = useState<number>(
+    typeof window !== 'undefined' ? window.innerWidth : 1024
+  );
+
+  useEffect(() => {
+    if (eager || pageNum <= 3) {
+      setIsVisible(true);
+      return;
+    }
+    const el = wrapperRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+          }
+        }
+      },
+      {
+        root: null,
+        rootMargin: '900px 0px',
+        threshold: 0.01,
+      }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [eager, pageNum]);
+
+  useEffect(() => {
+    let resizeTimer: any = null;
+    const handleResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        setWindowWidth(window.innerWidth);
+      }, 150);
+    };
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    return () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pdfDoc || !isVisible || !canvasRef.current) return;
+    let cancelled = false;
+
+    const renderPage = async () => {
+      try {
+        if (renderTaskRef.current) {
+          try {
+            renderTaskRef.current.cancel();
+          } catch {}
+          renderTaskRef.current = null;
+        }
+
+        const page = await pdfDoc.getPage(pageNum);
+        if (cancelled || !canvasRef.current) return;
+
+        const isMobileScreen = typeof window !== 'undefined' && window.innerWidth < 768;
+        // Cap DPR on mobile devices to 2.0 to prevent iOS/Android GPU canvas memory exhaustion
+        const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+        const dpr = Math.min(rawDpr, isMobileScreen ? 2 : 2.5);
+
+        const unscaledViewport = page.getViewport({ scale: 1, rotation });
+        const containerWidth =
+          containerRef.current?.clientWidth ||
+          (typeof window !== 'undefined' ? window.innerWidth : 800);
+        const availableWidth = Math.max(
+          260,
+          containerWidth - (isMobileScreen ? 16 : 64)
+        );
+
+        const effectiveScale = isMobileScreen
+          ? (availableWidth / Math.max(1, unscaledViewport.width)) * (scale / 1.15)
+          : scale;
+
+        const cssWidth = Math.round(unscaledViewport.width * effectiveScale);
+        const cssHeight = Math.round(unscaledViewport.height * effectiveScale);
+        setPageDimensions({ width: cssWidth, height: cssHeight });
+
+        const viewport = page.getViewport({ scale: effectiveScale * dpr, rotation });
+        const canvas = canvasRef.current;
+        if (!canvas || cancelled) return;
+
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx || cancelled) return;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const task = page.render({
+          canvasContext: ctx,
+          viewport,
+        });
+        renderTaskRef.current = task;
+        await task.promise;
+      } catch (err: any) {
+        if (err?.name !== 'RenderingCancelledException') {
+          console.warn(`Error rendering page ${pageNum}:`, err);
+        }
+      }
+    };
+
+    renderPage();
+
+    return () => {
+      cancelled = true;
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch {}
+        renderTaskRef.current = null;
+      }
+    };
+  }, [pdfDoc, pageNum, scale, rotation, isVisible, windowWidth, containerRef]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      style={
+        pageDimensions && !isVisible
+          ? { minWidth: `${pageDimensions.width}px`, minHeight: `${pageDimensions.height}px` }
+          : undefined
+      }
+      className="flex items-center justify-center bg-white min-h-[320px] min-w-[260px]"
+    >
+      <canvas ref={canvasRef} className="block max-w-full h-auto" />
+    </div>
+  );
+};
 
 interface SecurePdfViewerProps {
   documentId: string;
@@ -206,13 +371,14 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
     initPdf(files[index]);
   };
 
-  // 3. Initialize PDF via PDF.js (loads from local IndexedDB or fetches full binary from server)
+  // 3. Initialize PDF via PDF.js (loads from local IndexedDB or streams/fetches from server)
   const initPdf = async (fileItemOrBase64?: PdfDocumentItem | string) => {
     setLoadingPdf(true);
     setPdfLoadError(null);
     setPdfDoc(null);
 
     try {
+      setupPdfWorker();
       let targetItem: PdfDocumentItem | null = null;
 
       if (typeof fileItemOrBase64 === 'object' && fileItemOrBase64) {
@@ -228,14 +394,15 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
         const localBytes = await documentService.getFileBinaryBytes(targetItem.id, targetItem.pdfBase64);
         if (localBytes && localBytes.byteLength > 0) {
           try {
-            const doc = await pdfjsLib.getDocument({
-              data: localBytes.slice(0),
-              cMapPacked: true,
-            }).promise;
+            const doc = await pdfjsLib.getDocument(
+              getPdfDocumentOptions({
+                data: localBytes.slice(0),
+              })
+            ).promise;
             setPdfDoc(doc);
             setTotalPages(doc.numPages);
 
-            // If server was missing this binary, upload it in background so all other users can see it!
+            // If server was missing this binary, upload it in background so all other users & mobile devices can see it!
             if (targetItem.hasBinaryOnServer === false) {
               const fileObj = new File([localBytes as any], targetItem.originalFilename || 'document.pdf', {
                 type: 'application/pdf',
@@ -271,18 +438,25 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
           }
         }
 
-        // Step B: For very large PDFs (> 80 MB), try URL range streaming first so mobile devices don't run out of RAM,
-        // and fallback to full ArrayBuffer fetch if needed.
-        const isVeryLarge = (targetItem.fileSize || 0) > 80 * 1024 * 1024;
-        if (isVeryLarge) {
+        // Step B: On mobile devices (or for large PDFs > 15 MB), try HTTP Range streaming first so mobile browsers
+        // only fetch visible page chunks without exhausting RAM, then automatically fall back to ArrayBuffer fetch.
+        const isMobileDevice =
+          typeof window !== 'undefined' &&
+          (window.innerWidth < 768 || 'ontouchstart' in window || navigator.maxTouchPoints > 0);
+        const shouldTryRangeStream =
+          (targetItem.fileSize || 0) > 15 * 1024 * 1024 ||
+          (isMobileDevice && (targetItem.fileSize || 0) > 4 * 1024 * 1024);
+
+        if (shouldTryRangeStream) {
           try {
-            const doc = await pdfjsLib.getDocument({
-              url: streamUrl,
-              rangeChunkSize: 1024 * 1024,
-              disableAutoFetch: false,
-              disableStream: false,
-              cMapPacked: true,
-            }).promise;
+            const doc = await pdfjsLib.getDocument(
+              getPdfDocumentOptions({
+                url: streamUrl,
+                rangeChunkSize: 524288, // 512 KB chunks for fast mobile streaming
+                disableAutoFetch: true,
+                disableStream: true,
+              })
+            ).promise;
             setPdfDoc(doc);
             setTotalPages(doc.numPages);
             setLoadingPdf(false);
@@ -307,15 +481,17 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
           throw new Error('The PDF file on the server is empty or incomplete.');
         }
 
-        // Cache binary in local IndexedDB for instant viewing (for files up to 50 MB)
-        if (uint8.byteLength <= 50 * 1024 * 1024) {
+        // Cache binary in local IndexedDB for instant viewing (for files up to 50 MB on desktop, 20 MB on mobile)
+        const maxCacheBytes = isMobileDevice ? 20 * 1024 * 1024 : 50 * 1024 * 1024;
+        if (uint8.byteLength <= maxCacheBytes) {
           documentService.cacheFileBinaryBytes(targetItem.id, uint8).catch(() => {});
         }
 
-        const doc = await pdfjsLib.getDocument({
-          data: uint8,
-          cMapPacked: true,
-        }).promise;
+        const doc = await pdfjsLib.getDocument(
+          getPdfDocumentOptions({
+            data: uint8,
+          })
+        ).promise;
 
         setPdfDoc(doc);
         setTotalPages(doc.numPages);
@@ -345,10 +521,11 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
         } else {
           bytes = base64ToUint8Array(fileItemOrBase64);
         }
-        const doc = await pdfjsLib.getDocument({
-          data: bytes,
-          cMapPacked: true,
-        }).promise;
+        const doc = await pdfjsLib.getDocument(
+          getPdfDocumentOptions({
+            data: bytes,
+          })
+        ).promise;
         setPdfDoc(doc);
         setTotalPages(doc.numPages);
         setLoadingPdf(false);
@@ -420,60 +597,7 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
     }
   };
 
-  // 4. Render Canvas Pages (Responsive auto-fit on mobile screens)
-  const renderSinglePage = useCallback(
-    async (pageNum: number, canvas: HTMLCanvasElement) => {
-      if (!pdfDoc) return;
-      try {
-        const page = await pdfDoc.getPage(pageNum);
-        const dpr = window.devicePixelRatio || 1;
-        const unscaledViewport = page.getViewport({ scale: 1, rotation });
-        const isMobileScreen = typeof window !== 'undefined' && window.innerWidth < 640;
-        const availableWidth = Math.max(
-          280,
-          (pagesContainerRef.current?.clientWidth || window.innerWidth) - (isMobileScreen ? 24 : 64)
-        );
-        const effectiveScale = isMobileScreen
-          ? (availableWidth / unscaledViewport.width) * (scale / 1.15)
-          : scale;
-
-        const viewport = page.getViewport({ scale: effectiveScale * dpr, rotation });
-
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.width = `${viewport.width / dpr}px`;
-        canvas.style.height = `${viewport.height / dpr}px`;
-
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport,
-        };
-
-        await page.render(renderContext).promise;
-      } catch (err) {
-        console.warn(`Error rendering page ${pageNum}:`, err);
-      }
-    },
-    [pdfDoc, scale, rotation]
-  );
-
-  useEffect(() => {
-    if (!pdfDoc || viewingMode !== 'reader') return;
-    if (viewMode === 'scroll') {
-      for (let i = 1; i <= totalPages; i++) {
-        const c = pageCanvasRefs.current[i];
-        if (c) renderSinglePage(i, c);
-      }
-    } else {
-      const c = pageCanvasRefs.current[currentPage];
-      if (c) renderSinglePage(currentPage, c);
-    }
-  }, [pdfDoc, scale, rotation, viewMode, currentPage, totalPages, viewingMode, renderSinglePage]);
-
-  // 5. Anti-leak Keyboard and Context Menu Interceptors
+  // 4. Anti-leak Keyboard and Context Menu Interceptors
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -510,7 +634,11 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
     };
 
     const handleWindowBlur = () => {
-      if (antiScreenBlur) {
+      // Only trigger desktop cursor-outside-window blur shield on non-touch desktop screens
+      const isTouchOrMobile =
+        typeof window !== 'undefined' &&
+        (window.innerWidth < 768 || 'ontouchstart' in window || navigator.maxTouchPoints > 0);
+      if (antiScreenBlur && !isTouchOrMobile) {
         setIsWindowBlurred(true);
       }
     };
@@ -1367,19 +1495,21 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
               </div>
             </div>
           ) : viewMode === 'scroll' ? (
-            // Continuous Vertical Scroll
+            // Continuous Vertical Scroll (Virtualized with IntersectionObserver for smooth mobile rendering)
             Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
               <div
                 key={`${activeFileIndex}-${pageNum}`}
                 id={`doc-page-${pageNum}`}
-                className="relative bg-white rounded-lg shadow-2xl overflow-hidden group border border-slate-700/50"
+                className="relative bg-white rounded-lg shadow-2xl overflow-hidden group border border-slate-700/50 max-w-full"
               >
-                {/* PDF Canvas Tile */}
-                <canvas
-                  ref={(el) => {
-                    pageCanvasRefs.current[pageNum] = el;
-                  }}
-                  className="block"
+                {/* Self-rendering PDF Page Canvas Tile */}
+                <PdfPageCanvas
+                  pdfDoc={pdfDoc}
+                  pageNum={pageNum}
+                  scale={scale}
+                  rotation={rotation}
+                  eager={pageNum <= 3}
+                  containerRef={pagesContainerRef}
                 />
 
                 {/* Protective transparent interaction blocker */}
@@ -1404,13 +1534,15 @@ export const SecurePdfViewer: React.FC<SecurePdfViewerProps> = ({
             // Single Page Flip Mode
             <div
               id={`doc-page-${currentPage}`}
-              className="relative bg-white rounded-lg shadow-2xl overflow-hidden group border border-slate-700/50"
+              className="relative bg-white rounded-lg shadow-2xl overflow-hidden group border border-slate-700/50 max-w-full"
             >
-              <canvas
-                ref={(el) => {
-                  pageCanvasRefs.current[currentPage] = el;
-                }}
-                className="block"
+              <PdfPageCanvas
+                pdfDoc={pdfDoc}
+                pageNum={currentPage}
+                scale={scale}
+                rotation={rotation}
+                eager={true}
+                containerRef={pagesContainerRef}
               />
 
               {/* Protective transparent interaction blocker */}

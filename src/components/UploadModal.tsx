@@ -140,6 +140,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadPromisesRef = useRef<{ [key: string]: Promise<void> }>({});
+  const activeProgressCallbackRef = useRef<{ [key: string]: (pct: number, mbUploaded: number) => void }>({});
 
   // Sync folder with initialFolder and load persisted folders
   useEffect(() => {
@@ -192,10 +193,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         prev.map((q) => (q.id === itemId ? { ...q, uploadStatus: 'uploading', uploadPct: 0, uploadError: undefined } : q))
       );
       try {
-        await documentService.uploadFileInChunks(itemId, file, (pct) => {
+        await documentService.uploadFileInChunks(itemId, file, (pct, mbUploaded) => {
           setFilesQueue((prev) =>
             prev.map((q) => (q.id === itemId ? { ...q, uploadStatus: 'uploading', uploadPct: pct } : q))
           );
+          const liveCb = activeProgressCallbackRef.current[itemId];
+          if (liveCb) {
+            liveCb(pct, mbUploaded);
+          }
         });
         setFilesQueue((prev) =>
           prev.map((q) => (q.id === itemId ? { ...q, uploadStatus: 'done', uploadPct: 100, uploadError: undefined } : q))
@@ -471,9 +476,18 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             const existingPromise = uploadPromisesRef.current[item.id];
             if (existingPromise && item.uploadStatus !== 'error') {
               setUploadProgressText(
-                `Completing upload for "${item.originalFilename}" (${mbSize} MB) [${i + 1}/${filesQueue.length}]... ${item.uploadPct ?? 0}%`
+                `Uploading "${item.originalFilename}" (${mbSize} MB) [${i + 1}/${filesQueue.length}]... ${item.uploadPct ?? 0}%`
               );
-              await existingPromise;
+              activeProgressCallbackRef.current[item.id] = (pct, mbUploaded) => {
+                setUploadProgressText(
+                  `Uploading "${item.originalFilename}" (${mbSize} MB) [${i + 1}/${filesQueue.length}]... ${pct}% (${mbUploaded} MB)`
+                );
+              };
+              try {
+                await existingPromise;
+              } finally {
+                delete activeProgressCallbackRef.current[item.id];
+              }
             } else {
               setUploadProgressText(
                 `Uploading "${item.originalFilename}" (${mbSize} MB) [${i + 1}/${filesQueue.length}]... 0%`

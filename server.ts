@@ -702,21 +702,14 @@ async function startServer() {
       if (regAdmin) return true;
     }
 
-    // 3. If header explicitly claims 'admin' role, verify it is not a known non-admin account
-    if (userRole === 'admin' && (userId || userEmail || userIdentifier)) {
-      const knownNonAdmin =
+    // 3. If header explicitly claims 'admin' role or owner status, verify it is not a hardcoded demo non-admin account
+    const isOwnerHeader = req.headers['x-user-is-owner'] === 'true';
+    if ((userRole === 'admin' || isOwnerHeader) && (userId || userEmail || userIdentifier)) {
+      const knownDemoNonAdmin =
         candidateEmail === 'volunteer.marcus@gmail.com' ||
         candidateEmail === 'elena.rostova@thehelpingsquad.org' ||
-        candidateEmail === 'member.john@gmail.com' ||
-        registeredUsers.some(
-          (u) =>
-            u.role !== 'admin' &&
-            !isVerifiedAdminIdentity(u.id, u.email || u.identifier, u.phone) &&
-            ((userId && u.id === userId) ||
-              (userEmail && u.email && u.email.toLowerCase() === userEmail) ||
-              (userIdentifier && u.identifier && u.identifier.toLowerCase() === userIdentifier))
-        );
-      if (!knownNonAdmin) {
+        candidateEmail === 'member.john@gmail.com';
+      if (!knownDemoNonAdmin) {
         return true;
       }
     }
@@ -726,7 +719,7 @@ async function startServer() {
 
   function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
     if (!isRequestFromAdmin(req)) {
-      return res.status(403).json({
+      return res.status(401).json({
         error: 'Permission Denied: Administrative action blocked. Only verified Squad Administrators can upload, delete, or perform administrative actions on PDF files.',
         code: 'ADMIN_REQUIRED',
       });
@@ -741,7 +734,7 @@ async function startServer() {
     if (isSyncHeader || isSyncBody || isRequestFromAdmin(req)) {
       return next();
     }
-    return res.status(403).json({
+    return res.status(401).json({
       error: 'Permission Denied: Administrative action blocked. Only verified Squad Administrators can upload, delete, or perform administrative actions on PDF files.',
       code: 'ADMIN_REQUIRED',
     });
@@ -1464,6 +1457,8 @@ async function startServer() {
 
   // Get all documents (metadata only, stripping heavy pdfBase64 from every file for fast load)
   app.get('/api/documents', (_req, res) => {
+    deletedDocIds = loadDeletedDocs();
+    documents = loadDocuments();
     const list = documents.map((doc) => {
       const { pdfBase64: docBase64, files, ...rest } = doc;
       const strippedFiles = files.map(({ pdfBase64: fileBase64, ...fMeta }) => {
@@ -1480,6 +1475,7 @@ async function startServer() {
       const allHaveBinary = strippedFiles.length > 0 && strippedFiles.every((f) => f.hasBinaryOnServer);
       return {
         ...rest,
+        folder: (doc.folder && doc.folder.trim()) ? doc.folder.trim() : 'Official Handbooks',
         isActive: doc.isActive !== false,
         fileCount: files.length,
         files: strippedFiles,
@@ -1492,6 +1488,7 @@ async function startServer() {
 
   // Get permanently deleted document IDs so clients never resurrect them
   app.get('/api/documents/deleted-ids', (_req, res) => {
+    deletedDocIds = loadDeletedDocs();
     res.json({ deletedIds: deletedDocIds });
   });
 
@@ -1499,6 +1496,7 @@ async function startServer() {
   app.post('/api/documents/sync-deleted', requireAdmin, (req, res) => {
     try {
       const { deletedIds } = req.body;
+      deletedDocIds = loadDeletedDocs();
       if (Array.isArray(deletedIds)) {
         let changed = false;
         for (const id of deletedIds) {
@@ -1525,6 +1523,8 @@ async function startServer() {
   // Upload / create new document (supports 1 or MULTIPLE documents in 1 link, plus client sync restoration)
   app.post('/api/documents', requireAdminOrSync, (req, res) => {
     try {
+      deletedDocIds = loadDeletedDocs();
+      documents = loadDocuments();
       const {
         id: requestedId,
         title,
@@ -1544,7 +1544,7 @@ async function startServer() {
       } = req.body;
 
       if (requestedId && deletedDocIds.includes(requestedId)) {
-        if (!req.body.forceRestore) {
+        if (!req.body.forceRestore && !isClientSync) {
           return res.status(409).json({ error: 'Document was permanently deleted.' });
         }
         deletedDocIds = deletedDocIds.filter((delId) => delId !== requestedId);
@@ -2039,7 +2039,11 @@ async function startServer() {
 
   // Public View: Check link validity & access requirements (metadata only, no PDF content)
   app.get('/api/view/:id/meta', (req, res) => {
-    const doc = documents.find((d) => d.id === req.params.id);
+    let doc = documents.find((d) => d.id === req.params.id);
+    if (!doc) {
+      documents = loadDocuments();
+      doc = documents.find((d) => d.id === req.params.id);
+    }
     if (!doc) {
       return res.status(404).json({ error: 'Document does not exist or link is invalid' });
     }
@@ -2087,18 +2091,22 @@ async function startServer() {
 
   // Public View: Verify access and return PDF metadata + streaming URLs for ALL files in the link
   app.post('/api/view/:id/access', (req, res) => {
-    const doc = documents.find((d) => d.id === req.params.id);
+    let doc = documents.find((d) => d.id === req.params.id);
+    if (!doc) {
+      documents = loadDocuments();
+      doc = documents.find((d) => d.id === req.params.id);
+    }
     if (!doc) {
       return res.status(404).json({ error: 'Document not found' });
     }
 
     if (doc.isActive === false) {
-      return res.status(403).json({ error: 'Access to this document has been revoked by the owner.' });
+      return res.status(401).json({ error: 'Access to this document has been revoked by the owner.' });
     }
 
     const now = new Date();
     if (doc.settings.expiresAt && new Date(doc.settings.expiresAt) < now) {
-      return res.status(403).json({ error: 'This secure link has expired.' });
+      return res.status(401).json({ error: 'This secure link has expired.' });
     }
 
     if (
@@ -2107,7 +2115,7 @@ async function startServer() {
       doc.settings.maxViews > 0 &&
       doc.viewsCount >= doc.settings.maxViews
     ) {
-      return res.status(403).json({ error: 'This link has reached its maximum view limit.' });
+      return res.status(401).json({ error: 'This link has reached its maximum view limit.' });
     }
 
     const { password, viewerName, viewerEmail } = req.body;
@@ -2173,11 +2181,15 @@ async function startServer() {
     });
   });
 
-  // Streaming PDF binary endpoint with HTTP Range support for 400MB+ instant rendering
-  app.get('/api/view/:id/files/:fileId/raw', (req, res) => {
+  // Streaming PDF binary endpoint with HTTP Range & HEAD support for 400MB+ instant rendering on mobile and desktop
+  const handleRawPdfStream = (req: express.Request, res: express.Response) => {
     try {
       const { id, fileId } = req.params;
-      const doc = documents.find((d) => d.id === id);
+      let doc = documents.find((d) => d.id === id);
+      if (!doc) {
+        documents = loadDocuments();
+        doc = documents.find((d) => d.id === id);
+      }
       if (!doc) {
         return res.status(404).json({ error: 'Document not found' });
       }
@@ -2187,6 +2199,11 @@ async function startServer() {
       if (!fileMeta) {
         return res.status(404).json({ error: 'File not found in document pack' });
       }
+
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'Accept-Ranges, Content-Encoding, Content-Length, Content-Range'
+      );
 
       const filePath = path.resolve(UPLOADS_DIR, `${fileMeta.id}.pdf`);
       if (!fs.existsSync(filePath)) {
@@ -2198,6 +2215,9 @@ async function startServer() {
           res.setHeader('Content-Type', 'application/pdf');
           res.setHeader('Content-Length', buffer.length);
           res.setHeader('Accept-Ranges', 'none');
+          if (req.method === 'HEAD') {
+            return res.status(200).end();
+          }
           return res.send(buffer);
         }
         return res.status(404).json({ error: 'PDF file binary not found on server' });
@@ -2214,10 +2234,21 @@ async function startServer() {
         `inline; filename="${encodeURIComponent(fileMeta.originalFilename || 'document.pdf')}"`
       );
 
+      if (req.method === 'HEAD') {
+        res.setHeader('Content-Length', fileSize);
+        return res.status(200).end();
+      }
+
       if (range) {
         const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const start = Math.max(0, parseInt(parts[0], 10) || 0);
+        const end = parts[1] ? Math.min(fileSize - 1, parseInt(parts[1], 10)) : fileSize - 1;
+        if (start >= fileSize || start > end) {
+          res.writeHead(416, {
+            'Content-Range': `bytes */${fileSize}`,
+          });
+          return res.end();
+        }
         const chunksize = end - start + 1;
         const fileStream = fs.createReadStream(filePath, { start, end });
         res.writeHead(206, {
@@ -2226,20 +2257,30 @@ async function startServer() {
           'Content-Length': chunksize,
           'Content-Type': 'application/pdf',
         });
+        req.on('close', () => fileStream.destroy());
+        fileStream.on('error', () => res.end());
         fileStream.pipe(res);
       } else {
+        const fileStream = fs.createReadStream(filePath);
         res.writeHead(200, {
           'Content-Length': fileSize,
           'Content-Type': 'application/pdf',
           'Accept-Ranges': 'bytes',
         });
-        fs.createReadStream(filePath).pipe(res);
+        req.on('close', () => fileStream.destroy());
+        fileStream.on('error', () => res.end());
+        fileStream.pipe(res);
       }
     } catch (err: any) {
       console.error('Error streaming PDF file:', err);
-      res.status(500).json({ error: 'Failed to stream PDF: ' + err.message });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to stream PDF: ' + err.message });
+      }
     }
-  });
+  };
+
+  app.get('/api/view/:id/files/:fileId/raw', handleRawPdfStream);
+  app.head('/api/view/:id/files/:fileId/raw', handleRawPdfStream);
 
   // Get viewer logs / analytics for owner
   app.get('/api/documents/:id/analytics', (req, res) => {

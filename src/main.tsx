@@ -12,13 +12,21 @@ import './index.css';
 
 createRoot(document.getElementById('root')!).render(<App />);
 
-// Register Service Worker for PWA installability and offline support
+// Register Service Worker for PWA installability and automatic update
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshing) {
+      refreshing = true;
+      window.location.reload();
+    }
+  });
+
   const registerSw = () => {
     navigator.serviceWorker
-      .register('/sw.js')
+      .register('/sw.js', { updateViaCache: 'none' })
       .then((reg) => {
-        console.log('PWA ServiceWorker registered with scope:', reg.scope);
+        reg.update().catch(() => {});
       })
       .catch((err) => {
         console.warn('PWA ServiceWorker registration failed:', err);

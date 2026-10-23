@@ -1,8 +1,6 @@
 // The Helping Squad Vault - Service Worker
-const CACHE_NAME = 'squad-vault-cache-v4';
+const CACHE_NAME = 'squad-vault-cache-v7';
 const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
   '/manifest.webmanifest',
   '/manifest.json',
   '/the_helping_squad_logo.svg',
@@ -14,10 +12,11 @@ const PRECACHE_ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_ASSETS);
-    }).then(() => self.skipWaiting())
+      return cache.addAll(PRECACHE_ASSETS).catch(() => {});
+    })
   );
 });
 
@@ -38,12 +37,20 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Skip caching for API calls and non-GET requests (network only)
-  if (url.pathname.startsWith('/api/') || event.request.method !== 'GET') {
+  // Never intercept API calls, non-GET requests, or HTML navigation requests so mobile browsers & PWAs always fetch live data directly
+  if (
+    url.pathname.startsWith('/api/') ||
+    event.request.method !== 'GET' ||
+    event.request.mode === 'navigate'
+  ) {
     return;
   }
 
-  // Network-first with cache fallback for HTML navigation and static assets
+  // Only handle static precached icon/manifest assets; let JS/CSS bundles go directly to network
+  if (!PRECACHE_ASSETS.includes(url.pathname)) {
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {
@@ -58,11 +65,9 @@ self.addEventListener('fetch', (event) => {
       .catch(() => {
         return caches.match(event.request).then((cachedResponse) => {
           if (cachedResponse) return cachedResponse;
-          if (event.request.mode === 'navigate') {
-            return caches.match('/');
-          }
           return new Response('Network offline', { status: 503, statusText: 'Service Unavailable' });
         });
       })
   );
 });
+

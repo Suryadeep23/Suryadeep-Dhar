@@ -10,16 +10,33 @@ import * as pdfjsLib from 'pdfjs-dist';
 
 import localPdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 
+export const CMAP_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
+export const STANDARD_FONT_DATA_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/';
+
 // Configure the worker for pdfjs-dist
 export function setupPdfWorker() {
   if (typeof window === 'undefined') return;
   try {
     if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = localPdfWorkerUrl || `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        localPdfWorkerUrl || `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
     }
   } catch (err) {
     console.warn('Failed to set pdfjs workerSrc:', err);
   }
+}
+
+// Build mobile-safe PDF.js getDocument options with CMap & Standard Font fallbacks
+export function getPdfDocumentOptions(params: Record<string, any>) {
+  setupPdfWorker();
+  return {
+    cMapUrl: CMAP_URL,
+    cMapPacked: true,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    enableXfa: true,
+    isEvalSupported: false,
+    ...params,
+  };
 }
 
 // Convert Base64 string to Uint8Array for PDF.js getDocument
@@ -44,3 +61,4 @@ export function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 export { pdfjsLib };
+

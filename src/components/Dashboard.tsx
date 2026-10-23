@@ -375,18 +375,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   // Filter documents strictly by folder, search query, and status (if admin)
   const filteredDocs = documents.filter((doc) => {
-    // Regular users can only see active documents
-    if (!isAdmin && !doc.isActive) {
+    // Regular users can see all documents unless explicitly revoked (isActive === false)
+    if (!isAdmin && doc.isActive === false) {
       return false;
     }
 
-    const docFolder = (doc.folder || '').trim();
+    const docFolder = (doc.folder || 'Official Handbooks').trim();
     if (selectedFolder !== 'all') {
       if (docFolder.toLowerCase() !== selectedFolder.toLowerCase()) {
         return false;
       }
-    } else {
-      // In 'all' view, master collection is kept unless user wants specific folders
     }
 
     const matchesSearch =
@@ -395,14 +393,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
       (doc.files && doc.files.some((f) => f.title.toLowerCase().includes(searchQuery.toLowerCase())));
 
     if (isAdmin) {
-      if (statusFilter === 'active') return matchesSearch && doc.isActive;
-      if (statusFilter === 'inactive') return matchesSearch && !doc.isActive;
+      if (statusFilter === 'active') return matchesSearch && doc.isActive !== false;
+      if (statusFilter === 'inactive') return matchesSearch && doc.isActive === false;
     }
     return matchesSearch;
   });
 
   const totalViews = documents.reduce((sum, d) => sum + (d.viewsCount || 0), 0);
-  const activeLinks = documents.filter((d) => d.isActive).length;
+  const activeLinks = documents.filter((d) => d.isActive !== false).length;
   const totalPagesCount = documents.reduce((sum, d) => sum + (d.pageCount || 0), 0);
 
   const handleQuickCopy = (doc: DocumentRecord, e: React.MouseEvent) => {
@@ -1151,26 +1149,38 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
             <h3 className="text-base font-bold text-white">No PDF Documents Found</h3>
             <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
-              {isAdmin
+              {selectedFolder !== 'all' && documents.length > 0
+                ? `There are no PDF documents in folder "${selectedFolder}", but ${documents.length} PDF document(s) are available in other folders.`
+                : isAdmin
                 ? `No documents found in folder "${selectedFolder}". Add a new PDF to this folder or switch to "All PDF Files".`
                 : `There are currently no PDF documents available in "${selectedFolder}". Please check back soon or browse another folder.`}
             </p>
-            {isAdmin && (
-              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              {selectedFolder !== 'all' && documents.length > 0 && (
                 <button
-                  onClick={handleUploadClickSafe}
-                  className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black rounded-xl text-xs transition cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                  onClick={() => setSelectedFolder('all')}
+                  className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black rounded-xl text-xs transition cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-400/20"
                 >
-                  <Plus className="w-4 h-4 stroke-[3]" /> Add New PDF Document
+                  <FolderArchive className="w-4 h-4" /> View All PDF Files ({documents.length})
                 </button>
-                <button
-                  onClick={onSeedSampleClick}
-                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4" /> Load Official Squad Manuals
-                </button>
-              </div>
-            )}
+              )}
+              {isAdmin && (
+                <>
+                  <button
+                    onClick={handleUploadClickSafe}
+                    className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black rounded-xl text-xs transition cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                  >
+                    <Plus className="w-4 h-4 stroke-[3]" /> Add New PDF Document
+                  </button>
+                  <button
+                    onClick={onSeedSampleClick}
+                    className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-2"
+                  >
+                    <Sparkles className="w-4 h-4" /> Load Official Squad Manuals
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

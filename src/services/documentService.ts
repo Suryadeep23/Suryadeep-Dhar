@@ -71,7 +71,7 @@ async function saveFileChunkToIdb(
   totalSize: number,
   chunkBytes: Uint8Array
 ): Promise<void> {
-  if (!fileId || totalSize > 200 * 1024 * 1024) return;
+  if (!fileId || totalSize > 150 * 1024 * 1024) return;
   const db = await openVaultIdb();
   if (!db) return;
   return new Promise((resolve) => {
@@ -79,9 +79,7 @@ async function saveFileChunkToIdb(
       const tx = db.transaction(IDB_BINARIES_STORE, 'readwrite');
       const store = tx.objectStore(IDB_BINARIES_STORE);
       store.put(chunkBytes, `${fileId}_chunk_${chunkIndex}`);
-      if (chunkIndex === 0 || chunkIndex === totalChunks - 1) {
-        store.put({ totalChunks, totalSize, updatedAt: Date.now() }, `${fileId}_meta`);
-      }
+      store.put({ totalChunks, totalSize, updatedAt: Date.now() }, `${fileId}_meta`);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     } catch {
@@ -282,8 +280,17 @@ function normalizeLocalDoc(doc: any): DocumentRecord {
   const totalSize = files.reduce((sum, f) => sum + (f.fileSize || 0), 0) || doc.fileSize || 0;
   const totalPages = files.reduce((sum, f) => sum + (f.pageCount || 1), 0) || doc.pageCount || 1;
 
+  const resolvedFolder =
+    doc.folder && typeof doc.folder === 'string' && doc.folder.trim()
+      ? doc.folder.trim()
+      : doc.id === 'all_handbooks'
+      ? 'Master Collection'
+      : 'Official Handbooks';
+
   return {
     ...doc,
+    folder: resolvedFolder,
+    isActive: doc.isActive !== false,
     files,
     fileSize: totalSize,
     pageCount: totalPages,
@@ -397,8 +404,8 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// Consistent 1 MB chunk size for fast parallel transfers and 100% compatibility across mobile proxies & Cloud Run
-const UPLOAD_CHUNK_SIZE = 1024 * 1024; // 1 MB
+// Consistent 2 MB chunk size for fast parallel transfers and 100% compatibility across mobile proxies & Cloud Run
+const UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 
 // Upload a single chunk at its exact byte offset with up to 5 automatic retries and JSON fallback
 async function uploadSingleChunkWithRetry(
@@ -441,7 +448,7 @@ async function uploadSingleChunkWithRetry(
         }
       }
 
-      if (res.status === 403) {
+      if (res.status === 401 || res.status === 403) {
         const errJson = await res.json().catch(() => null);
         throw new Error(errJson?.error || 'Administrative permission required to upload PDF files.');
       }
@@ -493,7 +500,7 @@ async function uploadSingleChunkWithRetry(
   }
 }
 
-// Upload a Blob in streaming 1 MB chunks to server disk with 3x parallel workers, materialized IndexedDB chunk caching, and server disk verification
+// Upload a Blob in streaming 2 MB chunks to server disk with 3x parallel workers, materialized IndexedDB chunk caching, and server disk verification
 async function uploadBlobInChunksToServer(
   fileId: string,
   blob: Blob,
@@ -511,9 +518,6 @@ async function uploadBlobInChunksToServer(
     const chunkSlice = blob.slice(start, end);
     const chunkBuffer = await chunkSlice.arrayBuffer();
 
-    // Persist materialized Uint8Array chunk into IndexedDB so it never expires when mobile file pickers close
-    saveFileChunkToIdb(fileId, chunkIdx, totalChunks, blob.size, new Uint8Array(chunkBuffer)).catch(() => {});
-
     await uploadSingleChunkWithRetry(
       fileId,
       chunkIdx,
@@ -523,6 +527,9 @@ async function uploadBlobInChunksToServer(
       resetUpload,
       isClientSync
     );
+
+    // Persist materialized Uint8Array chunk into IndexedDB after network upload succeeds
+    await saveFileChunkToIdb(fileId, chunkIdx, totalChunks, blob.size, new Uint8Array(chunkBuffer));
 
     completedChunks++;
     bytesUploaded += end - start;
@@ -647,7 +654,7 @@ async function syncMissingDocToServer(doc: DocumentRecord): Promise<boolean> {
       body: JSON.stringify({
         id: doc.id,
         title: doc.title,
-        folder: doc.folder,
+        folder: doc.folder || 'Official Handbooks',
         files: filesToSync,
         originalFilename: doc.originalFilename,
         fileSize: doc.fileSize,
@@ -659,6 +666,7 @@ async function syncMissingDocToServer(doc: DocumentRecord): Promise<boolean> {
         accessLogs: doc.accessLogs,
         pdfBase64: '',
         isClientSync: true,
+        forceRestore: true,
       }),
     });
     return res.ok;
@@ -782,6 +790,7 @@ export const documentService = {
             if (syncedOk) {
               const docWithStatus: DocumentRecord = {
                 ...localDoc,
+                isActive: localDoc.isActive !== false,
                 hasBinaryOnServer: true,
                 files: (localDoc.files || []).map((f) => ({
                   ...f,
@@ -790,7 +799,8 @@ export const documentService = {
               };
               mergedDocs.unshift(docWithStatus);
             } else {
-              // Purge unrecoverable 0-byte local ghost entry
+              // Purge unrecoverable 0-byte local ghost entry immediately from localMap, IndexedDB, and localStorage
+              localMap.delete(docId);
               await deleteDocFromIdb(docId);
             }
           } else {
@@ -809,6 +819,7 @@ export const documentService = {
 
               mergedDocs[idx] = {
                 ...sDoc,
+                isActive: sDoc.isActive !== false,
                 hasBinaryOnServer: fixedOnServer,
                 files: sDoc.files.map((sf, fIdx) => ({
                   ...sf,
@@ -834,7 +845,7 @@ export const documentService = {
       // Fallback to local storage + IndexedDB if API is offline
     }
 
-    const fallbackList = Array.from(localMap.values());
+    const fallbackList = Array.from(localMap.values()).map(normalizeLocalDoc);
     saveLocalDocuments(fallbackList);
     return fallbackList;
   },
@@ -850,9 +861,6 @@ export const documentService = {
       throw new Error('Access Denied: Only administrators have permission to upload PDF files.');
     }
     await uploadBlobInChunksToServer(fileId, file, onProgress);
-    if (file.size <= 10 * 1024 * 1024) {
-      try { await saveFileBinaryToIdb(fileId, file); } catch {}
-    }
     return true;
   },
 
@@ -1007,6 +1015,8 @@ export const documentService = {
           },
           body: JSON.stringify({
             ...data,
+            isActive: true,
+            forceRestore: true,
             files: lightweightFilesForServer,
             pdfBase64: '',
           }),
@@ -1015,6 +1025,7 @@ export const documentService = {
           const createdServerDoc = normalizeLocalDoc(await res.json());
           const enrichedDoc: DocumentRecord = {
             ...createdServerDoc,
+            isActive: true,
             hasBinaryOnServer: true,
             files: createdServerDoc.files.map((sf, idx) => ({
               ...sf,
@@ -1029,7 +1040,7 @@ export const documentService = {
         } else {
           const errorData = await res.json().catch(() => null);
           lastError = errorData?.error || `Upload failed (Status ${res.status})`;
-          if (res.status === 400 || res.status === 403) {
+          if (res.status === 400 || res.status === 401 || res.status === 403) {
             throw new Error(lastError);
           }
         }
@@ -1188,7 +1199,7 @@ export const documentService = {
   // Get public metadata for a viewer
   async getViewMeta(id: string): Promise<ViewMetaResponse> {
     try {
-      const res = await fetch(`/api/view/${id}/meta`);
+      const res = await fetch(`/api/view/${id}/meta`, { cache: 'no-store' });
       if (res.ok) {
         return await res.json();
       }
@@ -1248,6 +1259,7 @@ export const documentService = {
     try {
       const res = await fetch(`/api/view/${id}/access`, {
         method: 'POST',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials),
       });
